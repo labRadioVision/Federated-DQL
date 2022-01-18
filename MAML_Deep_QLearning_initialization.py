@@ -1,8 +1,10 @@
-from RobotTrajectory import RobotTrajectory
+from RobotTrajectory_multitask import RobotTrajectory
 from consensus.consensus_v2 import CFA_process
 from consensus.target_server_v2 import Target_Server
 
-# from ReplayMemory import ReplayMemory
+# use MAML approach to optimally initialize the model parameters for DQL considering a number of tasks, here defined by different reward maps.
+# Each reward map, or task, corresponds to a different robot trajectory to be learned
+# run MAML_Deep_QLearning_initialization for a number of episodes before Federated_Deep_QLearning
 import numpy as np
 import os
 import tensorflow as tf
@@ -23,11 +25,11 @@ from matplotlib.pyplot import pause
 
 warnings.filterwarnings("ignore")
 parser = argparse.ArgumentParser()
-parser.add_argument('-initialization', default=1, help="set 1 to start from a previous initialization, 0 to start without initialization", type=float)
-parser.add_argument('-consensus', default=1, help="sets FRL using consensus", type=int)
-parser.add_argument('-PS', default=0, help="sets FRL with target model server", type=int)
-parser.add_argument('-isolated', default=0, help="disable FRL ", type=int)
-parser.add_argument('-centralized', default=0, help="centralized RL", type=int)
+parser.add_argument('-initialization', default=0, help="set 1 to start from a previous initialization, 0 to start without initialization", type=float)
+#parser.add_argument('-consensus', default=1, help="sets FRL using consensus", type=int)
+#parser.add_argument('-PS', default=0, help="sets FRL with target model server", type=int)
+#parser.add_argument('-isolated', default=0, help="disable FRL ", type=int)
+parser.add_argument('-centralized', default=1, help="centralized RL", type=int)
 parser.add_argument('-update_federation', default=20, help="counts the number of frames (robot movements) per epoch", type=int)
 parser.add_argument('-run', default=0, help="run number", type=int)
 parser.add_argument('-target_reward', default=50, help="run number", type=int)
@@ -39,7 +41,7 @@ parser.add_argument('-pos', default=100, help="sets the maximum total number of 
 parser.add_argument('-true_pos', default=35, help="sets the number of explorable positions in the workspace", type=int)
 parser.add_argument('-input_data', default='dataset_trajectories/data_robots2.mat', help="sets the path to the federated dataset, to compute new observations and rewards for input actions ", type=str)
 parser.add_argument('-input_table', default='dataset_trajectories/lookuptab2.mat', help="sets the path to the lookup table to compute robot trajectories", type=str)
-parser.add_argument('-input_rewards', default='dataset_trajectories/rewards2.mat', help="sets the path to the input rewards per robot position", type=str)
+parser.add_argument('-input_rewards', default='dataset_trajectories/rewards2.mat', help="sets the path to the tasks, namely the input rewards for each defined task", type=str)
 parser.add_argument('-rand', default=1, help="sets static or random choice of the N neighbors on every new round (0 static, 1 random)", type=int)
 #parser.add_argument('-consensus_mode', default=0, help="0: combine one neighbor at a time and run sgd AFTER every new combination; 1 (faster): combine all neighbors on a single stage, run one sgd after this combination", type=int)
 #parser.add_argument('-graph', default=6, help="sets the input graph: 0 for default graph, >0 uses the input graph in vGraph.mat, and choose one graph from the available adjacency matrices", type=int)
@@ -133,20 +135,14 @@ def processTargetServer(devices, federated):
 # execute for each deployed device
 def processData(device_index, number_positions_devices, federated, target_server, initialization, update_after_actions):
     pause(5) # server start first
-    #backup from MAML initialization
-    checkpointpath1_back = 'results/model{}.h5'.format(0)
-    checkpointpath2_back = 'results/model_target{}.h5'.format(0)
-    outfile_models_back = 'results/dump_train_model{}.npy'.format(0)
     checkpointpath1 = 'results/model{}.h5'.format(device_index)
     checkpointpath2 = 'results/model_target{}.h5'.format(device_index)
     outfile = 'results/dump_train_variables{}.npz'.format(device_index)
     outfile_models = 'results/dump_train_model{}.npy'.format(device_index)
     global_target_model = 'results/model_target_global.npy'
 
-    if args.centralized == 0:
-        max_steps_per_episode = number_positions_devices  # other option 1000
-    else:
-        max_steps_per_episode = number_positions_devices * devices  # other option 1000
+
+    max_steps_per_episode = number_positions_devices * devices  # other option 1000
 
     n_file_cfa = "models_saved/CFA_robot_{}_number_{}_neighbors_{}_explored_pos_{}_update_{}_run_{}.mat".format(device_index,
                                                                                                    devices,
@@ -201,12 +197,12 @@ def processData(device_index, number_positions_devices, federated, target_server
         train_start = True
 
         # backup the model and the model target
-        model = models.load_model(checkpointpath1_back)
-        model_target = models.load_model(checkpointpath2_back)
-        local_model_parameters = np.load(outfile_models_back, allow_pickle=True)
+        model = models.load_model(checkpointpath1)
+        model_target = models.load_model(checkpointpath2)
+        local_model_parameters = np.load(outfile_models, allow_pickle=True)
         model.set_weights(local_model_parameters.tolist())
 
-        #dump_vars = np.load(outfile, allow_pickle=True)
+        dump_vars = np.load(outfile, allow_pickle=True)
         # frame_count = dump_vars['frame_count']
         frame_count = 0
         action_history = []
@@ -258,14 +254,7 @@ def processData(device_index, number_positions_devices, federated, target_server
 
     while True:  # Run until solved
         # state = np.array(env.reset())
-
-        if args.centralized  == 0:
-            [obs, reward, done] = robot_trajectory.initialize(position_initial=initialization)
-        else: # CL learning
-            [obs, reward, done] = robot_trajectory.initialize(position_initial=initialization[inizialization_index])
-            #inizialization_index += 1
-            #if inizialization_index % devices == 0:
-            #    inizialization_index = 0
+        [obs, reward, done] = robot_trajectory.initialize(position_initial=initialization[inizialization_index])
 
         state = preprocess_observation(np.squeeze(obs))
         # episode_reward = reward
@@ -382,36 +371,6 @@ def processData(device_index, number_positions_devices, federated, target_server
                                                                                                    frame_count,
                                                                                                    running_reward,
                                                                                                    loss.numpy()))
-                    if federated and not training_signal:
-                        print(
-                            "Neighbor {} for device {} at episode {} and frame_count {}".format(
-                                neighbor, device_index, episode_count, frame_count))
-
-                        eps_c = 1 / (args.N + 1)
-                        # apply consensus for model parameter
-                        model.set_weights(cfa_consensus.federated_weights_computing(neighbor, args.N, frame_count, eps_c, update_consensus))
-                        if cfa_consensus.getTrainingStatusFromNeightbor():
-                            training_signal = True
-                    elif target_server:
-                        stop_aggregation = False
-                        while not os.path.isfile(global_target_model):
-                         # implementing consensus
-                         print("waiting")
-                         pause(1)
-                        try:
-                             model_target_global = np.load(global_target_model, allow_pickle=True)
-                        except:
-                            pause(5)
-                            print("retrying opening target model")
-                            try:
-                                model_target_global = np.load(global_target_model, allow_pickle=True)
-                            except:
-                                print("halting aggregation")
-                                stop_aggregation = True
-
-                        if not stop_aggregation:
-                            print("Device {} at episode {}".format(device_index, episode_count))
-                            model.set_weights(model_target_global.tolist())
                 else:
                     print("Warm up")
                     train_start = False
@@ -506,14 +465,7 @@ def processData(device_index, number_positions_devices, federated, target_server
                                 training_end=training_end)
             np.save(outfile_models, model_weights)
             dict_1 = {"episode_reward_history": episode_reward_history}
-            if federated:
-                sio.savemat(n_file_cfa, dict_1)
-                model.save(n_file_cfa_h5, include_optimizer=True, save_format='h5')
-            elif target_server:
-                sio.savemat(n_file_fa, dict_1)
-                sio.savemat("FA_device_{}.mat".format(device_index), dict_1)
-                model.save(n_file_fa_h5, include_optimizer=True, save_format='h5')
-            elif args.centralized == 1:
+            if args.centralized == 1:
                 sio.savemat(n_file_cl, dict_1)
                 model.save(n_file_cl_h5, include_optimizer=True, save_format='h5')
             else:
@@ -532,14 +484,7 @@ def processData(device_index, number_positions_devices, federated, target_server
                                 training_end=training_end)
             np.save(outfile_models, model_weights)
             dict_1 = {"episode_reward_history": episode_reward_history}
-            if federated:
-                sio.savemat(n_file_cfa, dict_1)
-                model.save(n_file_cfa_h5, include_optimizer=True, save_format='h5')
-            elif target_server:
-                sio.savemat(n_file_fa, dict_1)
-                sio.savemat("FA_device_{}.mat".format(device_index), dict_1)
-                model.save(n_file_fa_h5, include_optimizer=True, save_format='h5')
-            elif args.centralized == 1:
+            if args.centralized == 1:
                 sio.savemat(n_file_cl, dict_1)
                 model.save(n_file_cl_h5, include_optimizer=True, save_format='h5')
             else:
@@ -599,44 +544,9 @@ if __name__ == "__main__":
     # main loop for multiprocessing
     t = []
 
-    ############# enable federation #######################
-    # federated = False
-    if args.consensus == 1:
-        federated = True
-        target_server = False
-    else:
-        federated = False
-    ########################################################
-
-    ##################### enable target server ##############
-    # target_server = False
-    target_index = devices
-    if args.PS == 1:
-        target_server = True
-        federated = False
-    else:
-        target_server = False
-    #########################################################
-
-    if args.isolated == 1:
-        federated = False
-        target_server = False
-
-    if args.centralized == 0:
-        for ii in range(devices):
-            # position start
-            initialization = ii*int(args.true_pos/devices) # device 0 starts at position 0, device 1 starts at 1*true_pos/number_of_devices etc...
-            print("Device {} starting at position {}".format(ii, initialization))
-            t.append(multiprocessing.Process(target=processData, args=(ii, number_positions_devices, federated, target_server, initialization, update_after_actions)))
-            t[ii].start()
-
-        # last process is for the target server
-        if target_server:
-            print("Target server starting")
-            t.append(multiprocessing.Process(target=processTargetServer, args=(devices, federated)))
-            t[devices].start()
-    else:
-        update_after_actions = update_after_actions * devices
-        processData(0, number_positions_devices, False, False, np.arange(devices), update_after_actions)
+    federated = False
+    target_server = False
+    update_after_actions = update_after_actions * devices
+    processData(0, number_positions_devices, False, False, np.arange(devices), update_after_actions)
 
     exit(0)
