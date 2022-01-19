@@ -25,7 +25,7 @@ from matplotlib.pyplot import pause
 
 warnings.filterwarnings("ignore")
 parser = argparse.ArgumentParser()
-parser.add_argument('-initialization', default=0, help="set 1 to start from a previous initialization, 0 to start without initialization", type=float)
+parser.add_argument('-initialization', default=1, help="set 1 to start from a previous initialization, 0 to start without initialization", type=float)
 #parser.add_argument('-consensus', default=1, help="sets FRL using consensus", type=int)
 #parser.add_argument('-PS', default=0, help="sets FRL with target model server", type=int)
 #parser.add_argument('-isolated', default=0, help="disable FRL ", type=int)
@@ -39,9 +39,9 @@ parser.add_argument('-K', default=5, help="sets the number of network devices", 
 parser.add_argument('-N', default=1, help="sets the max. number of neighbors per device per round", type=int)
 parser.add_argument('-pos', default=100, help="sets the maximum total number of explorable positions: pos/K gives the number of explored positions per device", type=int)
 parser.add_argument('-true_pos', default=35, help="sets the number of explorable positions in the workspace", type=int)
-parser.add_argument('-input_data', default='dataset_trajectories/data_robots2.mat', help="sets the path to the federated dataset, to compute new observations and rewards for input actions ", type=str)
+parser.add_argument('-input_data', default='dataset_trajectories/data_robots3.mat', help="sets the path to the federated dataset, to compute new observations and rewards for input actions ", type=str)
 parser.add_argument('-input_table', default='dataset_trajectories/lookuptab2.mat', help="sets the path to the lookup table to compute robot trajectories", type=str)
-parser.add_argument('-input_rewards', default='dataset_trajectories/rewards2.mat', help="sets the path to the tasks, namely the input rewards for each defined task", type=str)
+parser.add_argument('-input_rewards', default='dataset_trajectories/rewards3.mat', help="sets the path to the tasks, namely the input rewards for each defined task", type=str)
 parser.add_argument('-rand', default=1, help="sets static or random choice of the N neighbors on every new round (0 static, 1 random)", type=int)
 #parser.add_argument('-consensus_mode', default=0, help="0: combine one neighbor at a time and run sgd AFTER every new combination; 1 (faster): combine all neighbors on a single stage, run one sgd after this combination", type=int)
 #parser.add_argument('-graph', default=6, help="sets the input graph: 0 for default graph, >0 uses the input graph in vGraph.mat, and choose one graph from the available adjacency matrices", type=int)
@@ -77,8 +77,8 @@ target_reward = args.target_reward
 # How often to update the consensus process
 update_consensus = args.update_federation
 #update_consensus = 100 # PREVIOUSLY 8 (upate consensus or plain FL with PS
-# max number of episodes
-max_episodes = 10000
+# max number of episodes for initialization
+max_episodes = 150
 # Maximum replay length
 max_memory_length = 50000 # previous 100000
 # Using huber loss for stability
@@ -310,7 +310,7 @@ def processData(device_index, number_positions_devices, federated, target_server
             state = state_next
 
             # Update every fourth frame and once batch size is over 32
-            if frame_count % update_after_actions == 0 and len(done_history) > batch_size and not training_signal:
+            if frame_count % update_after_actions == 0 and len(done_history) > batch_size:
                 # start = time.time()
                 # Get indices of samples for replay buffers
                 indices = np.random.choice(range(len(done_history)), size=batch_size)
@@ -410,15 +410,15 @@ def processData(device_index, number_positions_devices, federated, target_server
                 break
 
         # validation tool for device 'device_index'
-        trajectory = np.zeros(number_positions, dtype=int)
+        # trajectory = np.zeros(number_positions, dtype=int)
         [obs, reward, done] = robot_trajectory_validation.initialize() # initialize in position 0 (entrance)
         state = preprocess_observation(np.squeeze(obs))
         episode_reward = reward
-        tr_count = 0
+        #tr_count = 0
         # print(training_signal)
         for timestep_v in range(1, number_positions): # validate overall the full position set (number of positions)
-            trajectory[tr_count] = robot_trajectory_validation.getPosition()
-            tr_count += 1
+            #trajectory[tr_count] = robot_trajectory_validation.getPosition()
+            #tr_count += 1
             # wait for epsilon_random_frames before validating
             if  epsilon_min_validation > np.random.rand(1)[0]:
                 # Take random action
@@ -440,7 +440,7 @@ def processData(device_index, number_positions_devices, federated, target_server
             if done:
                 print("found an exit with reward {}".format(reward))
                 break
-        trajectory[tr_count] = robot_trajectory_validation.getPosition()
+        # trajectory[tr_count] = robot_trajectory_validation.getPosition()
 
         # Update running reward to check condition for solving
         episode_reward_history.append(episode_reward)
@@ -451,30 +451,7 @@ def processData(device_index, number_positions_devices, federated, target_server
 
         episode_count += 1
 
-        if running_reward > target_reward:  # Condition to consider the task solved
-            print("Solved for device {} at episode {} with running reward {:.2f} !".format(device_index, episode_count, running_reward))
-            print(trajectory)
-            print("Reward {:.2f} for trajectory".format(episode_reward))
-
-            training_end = True
-            model_weights = np.asarray(model.get_weights())
-            model.save(checkpointpath1, include_optimizer=True, save_format='h5')
-            # model_target.save(checkpointpath2, include_optimizer=True, save_format='h5')
-            np.savez(outfile, frame_count=frame_count, episode_reward_history=episode_reward_history,
-                                running_reward=running_reward, episode_count=episode_count, epsilon=epsilon,
-                                training_end=training_end)
-            np.save(outfile_models, model_weights)
-            dict_1 = {"episode_reward_history": episode_reward_history}
-            if args.centralized == 1:
-                sio.savemat(n_file_cl, dict_1)
-                model.save(n_file_cl_h5, include_optimizer=True, save_format='h5')
-            else:
-                sio.savemat(n_file_isolated, dict_1)
-                model.save(n_file_isolated_h5, include_optimizer=True, save_format='h5')
-            break
-
         if episode_count > max_episodes:  # stop simulation
-            print("Unsolved for device {} at episode {}!".format(device_index, episode_count))
             training_end = True
             model_weights = np.asarray(model.get_weights())
             model.save(checkpointpath1, include_optimizer=True, save_format='h5')
@@ -487,11 +464,7 @@ def processData(device_index, number_positions_devices, federated, target_server
             if args.centralized == 1:
                 sio.savemat(n_file_cl, dict_1)
                 model.save(n_file_cl_h5, include_optimizer=True, save_format='h5')
-            else:
-                sio.savemat(n_file_isolated, dict_1)
-                model.save(n_file_isolated_h5, include_optimizer=True, save_format='h5')
             break
-
 
 if __name__ == "__main__":
     
